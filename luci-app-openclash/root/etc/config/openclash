@@ -68,18 +68,18 @@ config openclash 'config'
 	
 config dns_servers
 	option type 'udp'
-	option ip '192.168.2.99'
+	option ip '192.168.1.65'
 	option enabled '1'
 	option group 'default'
 
 config dns_servers
 	option group 'nameserver'
 	option type 'udp'
-	option ip '192.168.2.99'
+	option ip '192.168.1.65'
 	option enabled '1'
 
 config dns_servers
 	option enabled '1'
 	option group 'fallback'
-	option ip '192.168.2.99'
+	option ip '192.168.1.65'
 	option type 'udp'
