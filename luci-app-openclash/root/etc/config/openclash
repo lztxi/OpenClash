@@ -79,7 +79,7 @@ config dns_servers
 	option enabled '1'
 
 config dns_servers
-	option enabled '1'
+	option enabled '0'
 	option group 'fallback'
 	option ip '192.168.1.240'
 	option type 'udp'
