@@ -69,14 +69,14 @@ config openclash 'config'
 config dns_servers
 	option type 'udp'
 	option ip '192.168.1.240'
-	option enabled '1'
+	option enabled '0'
 	option group 'default'
 
 config dns_servers
 	option group 'nameserver'
 	option type 'udp'
 	option ip '192.168.1.240'
-	option enabled '1'
+	option enabled '0'
 
 config dns_servers
 	option enabled '0'
