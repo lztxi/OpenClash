@@ -358,7 +358,11 @@ convert_custom_param()
       return
    fi
    local p_name="${1%%=*}" p_value="${1#*=}"
-   append_custom_params="${append_custom_params}&${p_name}=$(urlencode "$p_value")"
+   if [ -z "$append_custom_params" ]; then
+      append_custom_params="&${p_name}=$(urlencode "$p_value")"
+   else
+      append_custom_params="${append_custom_params}\`$(urlencode "$p_value")"
+   fi
 }
 
 sub_info_get()
@@ -383,7 +387,13 @@ sub_info_get()
    config_get "sub_ua" "$section" "sub_ua" "Clash"
    
    if [ "$enabled" -eq 0 ]; then
-      return
+      if [ -n "$2" ]; then
+         if [ "$2" != "$CONFIG_FILE" ] && [ "$2" != "$name" ]; then
+            return
+         fi
+      else
+         return
+      fi
    fi
    
    if [ -z "$address" ]; then
@@ -415,7 +425,7 @@ sub_info_get()
       BACKPACK_FILE="/etc/openclash/backup/$name.yaml"
    fi
 
-   if [ -n "$2" ] && [ "$2" != "$CONFIG_FILE" ]; then
+   if [ -n "$2" ] && [ "$2" != "$CONFIG_FILE" ] && [ "$2" != "$name" ]; then
       return
    fi
    

@@ -31,6 +31,7 @@ function index()
 	entry({"admin", "services", "openclash", "opupdate"},call("action_opupdate"))
 	entry({"admin", "services", "openclash", "coreupdate"},call("action_coreupdate"))
 	entry({"admin", "services", "openclash", "flush_fakeip_cache"}, call("action_flush_fakeip_cache"))
+	entry({"admin", "services", "openclash", "update_config"}, call("action_update_config"))
 	entry({"admin", "services", "openclash", "download_rule"}, call("action_download_rule"))
 	entry({"admin", "services", "openclash", "restore"}, call("action_restore_config"))
 	entry({"admin", "services", "openclash", "backup"}, call("action_backup"))
@@ -347,12 +348,17 @@ function action_flush_fakeip_cache()
 		local dase = dase() or ""
 		local cn_port = cn_port()
 		if not daip or not cn_port then return end
-  	state = luci.sys.exec(string.format('curl -sL -m 3 -H "Content-Type: application/json" -H "Authorization: Bearer %s" -XPOST http://"%s":"%s"/cache/fakeip/flush', dase, daip, cn_port))
-  end
-  luci.http.prepare_content("application/json")
+		state = luci.sys.exec(string.format('curl -sL -m 3 -H "Content-Type: application/json" -H "Authorization: Bearer %s" -XPOST http://"%s":"%s"/cache/fakeip/flush', dase, daip, cn_port))
+	end
+	luci.http.prepare_content("application/json")
 	luci.http.write_json({
 		flush_status = state;
 	})
+end
+
+function action_update_config()
+	local filename = luci.http.formvalue("filename") or "config"
+	luci.sys.exec(string.format("/usr/share/openclash/openclash.sh '%s' >/dev/null 2>&1 &", filename))
 end
 
 function action_restore_config()
@@ -675,20 +681,34 @@ function sub_info_get()
 						expire = os.date("%Y-%m-%d", day_expire) or "null"
 						if day_expire and os.time() <= day_expire then
 							day_left = math.ceil((day_expire - os.time()) / (3600*24))
+							if math.ceil(day_left / 365) > 50 then
+								day_left = "∞"
+							end
 						elseif day_expire == nil then
 							day_left = "null"
 						else
 							day_left = 0
 						end
-						if used and total and used < total then
+						if used and total and used <= total then
 							percent = string.format("%.1f",((total-used)/total)*100) or nil
-						elseif used == nil or total == nil or total == 0 then
+							surplus = fs.filesize(total - used) or "null"
+						elseif used == nil and total and total > 0.0 then
 							percent = 100
+							surplus = total
+						elseif total and total == 0.0 then
+							percent = 100
+							surplus = "∞"
 						else
 							percent = 0
+							surplus = "null"
 						end
-						surplus = fs.filesize(total - used) or "null"
-						total = fs.filesize(total) or "null"
+						if total and total > 0.0 then
+							total = fs.filesize(total) or "null"
+						elseif total and total == 0.0 then
+							total = "∞"
+						else
+							total = "null"
+						end
 						used = fs.filesize(used) or "null"
 						sub_info = "Successful"
 					else
@@ -831,7 +851,7 @@ end
 
 local function s(e)
 local t=0
-local a={' B/S',' KB/S',' MB/S',' GB/S',' TB/S'}
+local a={' B/S',' KB/S',' MB/S',' GB/S',' TB/S',' PB/S'}
 if (e<=1024) then
 	return e..a[1]
 else
