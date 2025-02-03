@@ -8,8 +8,10 @@ set_lock() {
 
 del_lock() {
    flock -u 878 2>/dev/null
-   rm -rf "/tmp/lock/openclash_update.lock"
+   rm -rf "/tmp/lock/openclash_update.lock" 2>/dev/null
 }
+
+set_lock
 
 if [ -n "$1" ] && [ "$1" != "one_key_update" ]; then
    [ ! -f "/tmp/openclash_last_version" ] && /usr/share/openclash/openclash_version.sh "$1" 2>/dev/null
@@ -22,6 +24,7 @@ fi
 if [ ! -f "/tmp/openclash_last_version" ]; then
    LOG_OUT "Error: Failed to Get Version Information, Please Try Again Later..."
    SLOG_CLEAN
+   del_lock
    exit 0
 fi
 
@@ -30,7 +33,7 @@ LAST_VER=$(sed -n 1p "$LAST_OPVER" 2>/dev/null |sed "s/^v//g" |tr -d "\n")
 if [ -x "/bin/opkg" ]; then
    OP_CV=$(rm -f /var/lock/opkg.lock && opkg status luci-app-openclash 2>/dev/null |grep 'Version' |awk -F 'Version: ' '{print $2}' |awk -F '.' '{print $2$3}' 2>/dev/null)
 elif [ -x "/usr/bin/apk" ]; then
-   OP_CV=$(apk list luci-app-openclash 2>/dev/null |grep 'installed' | grep -oE '\d+(\.\d+)*' | head -1 |awk -F '.' '{print $2$3}' 2>/dev/null)
+   OP_CV=$(apk list luci-app-openclash 2>/dev/null|grep 'installed' | grep -oE '[0-9]+(\.[0-9]+)*' | head -1 |awk -F '.' '{print $2$3}' 2>/dev/null)
 fi
 OP_LV=$(sed -n 1p "$LAST_OPVER" 2>/dev/null |awk -F 'v' '{print $2}' |awk -F '.' '{print $2$3}' 2>/dev/null)
 RELEASE_BRANCH=$(uci -q get openclash.config.release_branch || echo "master")
@@ -57,8 +60,6 @@ else
       LOG_OUT "Tip: If the download fails, try setting the CDN in Overwrite Settings - General Settings - Github Address Modify Options"
    fi
 fi
-
-set_lock
 
 if [ -n "$OP_CV" ] && [ -n "$OP_LV" ] && [ "$(expr "$OP_LV" \> "$OP_CV")" -eq 1 ] && [ -f "$LAST_OPVER" ]; then
    LOG_OUT "Start Downloading【OpenClash - v$LAST_VER】..."
@@ -90,8 +91,8 @@ if [ -n "$OP_CV" ] && [ -n "$OP_LV" ] && [ "$(expr "$OP_LV" \> "$OP_CV")" -eq 1 
          if [ -s "/tmp/openclash.ipk" ]; then
             if [ -z "$(opkg install /tmp/openclash.ipk --noaction 2>/dev/null |grep 'Upgrading luci-app-openclash on root' 2>/dev/null)" ]; then
                LOG_OUT "【OpenClash - v$LAST_VER】Pre Update Test Failed, The File is Saved in /tmp/openclash.ipk, Please Try to Update Manually!"
-               if [ "$(uci -q get openclash.config.config_reload)" -eq 1 ]; then
-                  uci -q set openclash.config.config_reload=0
+               if [ "$(uci -q get openclash.config.restart)" -eq 1 ]; then
+                  uci -q set openclash.config.restart=0
                   uci -q commit openclash
                   /etc/init.d/openclash restart >/dev/null 2>&1 &
                else
@@ -106,8 +107,8 @@ if [ -n "$OP_CV" ] && [ -n "$OP_LV" ] && [ "$(expr "$OP_LV" \> "$OP_CV")" -eq 1 
             apk add -s -q --clean-protected --allow-untrusted /tmp/openclash.apk >/dev/null 2>&1
             if [ "$?" != "0" ]; then
                LOG_OUT "【OpenClash - v$LAST_VER】Pre Update Test Failed, The File is Saved in /tmp/openclash.apk, Please Try to Update Manually!"
-               if [ "$(uci -q get openclash.config.config_reload)" -eq 1 ]; then
-                  uci -q set openclash.config.config_reload=0
+               if [ "$(uci -q get openclash.config.restart)" -eq 1 ]; then
+                  uci -q set openclash.config.restart=0
                   uci -q commit openclash
                   /etc/init.d/openclash restart >/dev/null 2>&1 &
                else
@@ -168,7 +169,7 @@ elif [ -x "/usr/bin/apk" ]; then
    if [ "$?" != "0" ] || [ -z "$(apk list luci-app-openclash 2>/dev/null |grep 'installed')" ]; then
       apk add -q --clean-protected --allow-untrusted /tmp/openclash.apk
    fi
-   if [ "$?" != "0" ] || [ -z "$(apk list luci-app-openclash 2>/dev/null |grep 'installed')" ]; then
+   if [ "$?" == "0" ] || [ -n "$(apk list luci-app-openclash 2>/dev/null |grep 'installed')" ]; then
       rm -rf /tmp/openclash.apk >/dev/null 2>&1
       LOG_OUT "OpenClash Update Successful, About To Restart!"
       uci -q set openclash.config.enable=1
@@ -181,15 +182,15 @@ elif [ -x "/usr/bin/apk" ]; then
 fi
 EOF
    chmod 4755 /tmp/openclash_update.sh
-   nohup /tmp/openclash_update.sh &
+   /tmp/openclash_update.sh &
    wait
    rm -rf /tmp/openclash_update.sh
    else
       LOG_OUT "【OpenClash - v$LAST_VER】Download Failed, Please Check The Network or Try Again Later!"
       rm -rf /tmp/openclash.ipk >/dev/null 2>&1
       rm -rf /tmp/openclash.apk >/dev/null 2>&1
-      if [ "$(uci -q get openclash.config.config_reload)" -eq 1 ]; then
-         uci -q set openclash.config.config_reload=0
+      if [ "$(uci -q get openclash.config.restart)" -eq 1 ]; then
+         uci -q set openclash.config.restart=0
          uci -q commit openclash
          /etc/init.d/openclash restart >/dev/null 2>&1 &
       else
@@ -202,8 +203,8 @@ else
    else
       LOG_OUT "OpenClash Has not Been Updated, Stop Continuing!"
    fi
-   if [ "$(uci -q get openclash.config.config_reload)" -eq 1 ]; then
-      uci -q set openclash.config.config_reload=0
+   if [ "$(uci -q get openclash.config.restart)" -eq 1 ]; then
+      uci -q set openclash.config.restart=0
       uci -q commit openclash
       /etc/init.d/openclash restart >/dev/null 2>&1 &
    else
