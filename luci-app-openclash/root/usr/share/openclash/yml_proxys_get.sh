@@ -1,6 +1,7 @@
 #!/bin/bash
 . /lib/functions.sh
 . /usr/share/openclash/log.sh
+. /usr/share/openclash/uci.sh
 
 set_lock() {
    exec 875>"/tmp/lock/openclash_proxies_get.lock" 2>/dev/null
@@ -12,9 +13,9 @@ del_lock() {
    rm -rf "/tmp/lock/openclash_proxies_get.lock"
 }
 
-CONFIG_FILE=$(uci -q get openclash.config.config_path)
+CONFIG_FILE=$(uci_get_config "config_path")
 CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
-UPDATE_CONFIG_FILE=$(uci -q get openclash.config.config_update_path)
+UPDATE_CONFIG_FILE=$(uci_get_config "config_update_path")
 UPDATE_CONFIG_NAME=$(echo "$UPDATE_CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
 LOG_FILE="/tmp/openclash.log"
 set_lock
@@ -52,8 +53,8 @@ fi
 CFG_FILE="/etc/config/openclash"
 match_servers="/tmp/match_servers.list"
 match_provider="/tmp/match_provider.list"
-servers_update=$(uci -q get openclash.config.servers_update)
-servers_if_update=$(uci -q get openclash.config.servers_if_update)
+servers_update=$(uci_get_config "servers_update")
+servers_if_update=$(uci_get_config "servers_if_update")
 
 cfg_new_servers_groups_check()
 {
@@ -85,24 +86,23 @@ cfg_group_name()
    fi
 
    if [ "$name" = "$2" ]; then
-      config_group_exist=$(( $config_group_exist + 1 ))
+      if [ -z "$new_server_add_group" ]; then
+         new_server_add_group="$name"
+      else
+         new_server_add_group="$new_server_add_group|||$name"
+      fi
    fi
 }
 
 #判断当前配置文件策略组信息是否包含指定策略组
-config_group_exist=0
-if [ -z "$(uci -q get openclash.config.new_servers_group)" ]; then
-   config_group_exist=2
-elif [ "$(uci -q get openclash.config.new_servers_group)" = "all" ]; then
-   config_group_exist=1
-else
-   config_load "openclash"
-   config_list_foreach "config" "new_servers_group" cfg_new_servers_groups_check
+config_load "openclash"
+config_list_foreach "config" "new_servers_group" cfg_new_servers_groups_check
 
-   if [ "$config_group_exist" -ne 0 ]; then
-      config_group_exist=1
+if [ "$(uci_get_config "new_servers_group")" = "all" ]; then
+   if [ -z "$new_server_add_group" ]; then
+      new_server_add_group="all"
    else
-      config_group_exist=0
+      new_server_add_group="all|||$new_server_add_group"
    fi
 fi
 
@@ -157,6 +157,8 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
    threads_pr = [];
    threads_uci = [];
    uci_commands = [];
+   uci_name_tmp_prv = [];
+   uci_name_tmp = [];
 
    if not Value.key?('proxy-providers') or Value['proxy-providers'].nil? then
       Value['proxy-providers'] = {};
@@ -166,7 +168,8 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
       Value['proxies'] = [];
    end;
 
-   Value['proxy-providers'].each do |x,y|
+   Value['proxy-providers'].each_with_index do |(x,y), index|
+      uci_name_tmp_prv << %x{uci -q add openclash proxy-provider 2>&1}.chomp;
       threads_pr << Thread.new {
          begin
             YAML.LOG('Start Getting【${CONFIG_NAME} - ' + y['type'].to_s + ' - ' + x.to_s + '】Proxy-provider Setting...');
@@ -177,22 +180,20 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                cmd = 'sed -i \"/^' + provider_nums + '\./c\\#match#\" $match_provider 2>/dev/null';
                system(cmd);
                uci_set='uci -q set openclash.@proxy-provider[' + provider_nums + '].';
-               uci_get='uci -q get openclash.@proxy-provider[' + provider_nums + '].';
                uci_add='uci -q add_list openclash.@proxy-provider[' + provider_nums + '].';
                uci_del='uci -q delete openclash.@proxy-provider[' + provider_nums + '].';
-               cmd = uci_get + 'manual';
                if not provider_nums then
                   uci_commands << uci_set + 'manual=0';
                end;
                uci_commands << uci_set + 'type=\"' + y['type'].to_s + '\"';
+               uci_name_tmp_prv[index] = 'uci -q delete openclash.' + uci_name_tmp_prv[index];
             else
                #代理集不存在时添加新代理集
-               uci_name_tmp=%x{uci -q add openclash proxy-provider 2>&1}.chomp;
-               uci_set='uci -q set openclash.' + uci_name_tmp + '.';
-               uci_add='uci -q add_list openclash.' + uci_name_tmp + '.';
-               uci_del='uci -q delete openclash.' + uci_name_tmp + '.';
+               uci_set='uci -q set openclash.' + uci_name_tmp_prv[index] + '.';
+               uci_add='uci -q add_list openclash.' + uci_name_tmp_prv[index] + '.';
+               uci_del='uci -q delete openclash.' + uci_name_tmp_prv[index] + '.';
                
-               if '$config_group_exist' == 0 and '$servers_if_update' == '1' and '$servers_update' == 1 then
+               if '$new_server_add_group'.to_s.strip.empty? and '$servers_if_update' == '1' and '$servers_update' == 1 then
                   uci_commands << uci_set + 'enabled=0';
                else
                   uci_commands << uci_set + 'enabled=1';
@@ -265,9 +266,9 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
 
             threads_prv << Thread.new{
                #加入策略组
-               if '$servers_if_update' == '1' and '$config_group_exist' == '1' and '$servers_update' == '1' and provider_nums.empty? then
+               if '$servers_if_update' == '1' and ! '$new_server_add_group'.to_s.strip.empty? and '$servers_update' == '1' and provider_nums.empty? then
                   #新代理集且设置默认策略组时加入指定策略组
-                  new_provider_groups = %x{uci get openclash.config.new_servers_group}.chomp.split(\"'\").map { |x| x.strip }.reject { |x| x.empty? };
+                  new_provider_groups = '$new_server_add_group'.to_s.split('|||').map(&:strip).reject(&:empty?);
                   new_provider_groups.each do |x|
                      uci_commands << uci_add + 'groups=\"^' + x + '$\"'
                   end
@@ -289,17 +290,18 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                         end
                      };
                   };
-                  threads_agr.each(&:join)
+                  threads_agr.each(&:join);
                end;
             };
-            threads_prv.each(&:join)
+            threads_prv.each(&:join);
          rescue Exception => e
             YAML.LOG('Error: Resolve Proxy-providers Failed,【${CONFIG_NAME} - ' + x + ': ' + e.message + '】');
          end;
       };
    end;
-   
-   Value['proxies'].each do |x|
+
+   Value['proxies'].each_with_index do |x, index|
+      uci_name_tmp << %x{uci -q add openclash servers 2>&1}.chomp;
       threads_pr << Thread.new {
          begin
             YAML.LOG('Start Getting【${CONFIG_NAME} - ' + x['type'].to_s + ' - ' + x['name'].to_s + '】Proxy Setting...');
@@ -311,20 +313,18 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                cmd = 'sed -i \"/^' + server_num + '\./c\\#match#\" $match_servers 2>/dev/null';
                system(cmd);
                uci_set='uci -q set openclash.@servers[' + server_num + '].';
-               uci_get='uci -q get openclash.@servers[' + server_num + '].';
                uci_add='uci -q add_list openclash.@servers[' + server_num + '].';
                uci_del='uci -q delete openclash.@servers[' + server_num + '].';
-               cmd = uci_get + 'manual';
                if not server_num then
                   uci_commands << uci_set + 'manual=0';
                end;
+               uci_name_tmp[index] = 'uci -q delete openclash.' + uci_name_tmp[index];
             else
                #添加新节点
-               uci_name_tmp=%x{uci -q add openclash servers 2>&1}.chomp;
-               uci_set='uci -q set openclash.' + uci_name_tmp + '.';
-               uci_add='uci -q add_list openclash.' + uci_name_tmp + '.';
-               uci_del='uci -q delete openclash.' + uci_name_tmp + '.';
-               if '$config_group_exist' == 0 and '$servers_if_update' == '1' and '$servers_update' == 1 then
+               uci_set='uci -q set openclash.' + uci_name_tmp[index] + '.';
+               uci_add='uci -q add_list openclash.' + uci_name_tmp[index] + '.';
+               uci_del='uci -q delete openclash.' + uci_name_tmp[index] + '.';
+               if '$new_server_add_group'.to_s.strip.empty? and '$servers_if_update' == '1' and '$servers_update' == 1 then
                   uci_commands << uci_set + 'enabled=0';
                else
                   uci_commands << uci_set + 'enabled=1';
@@ -392,43 +392,6 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                   uci_commands << uci_set + 'tfo=\"' + x['tfo'].to_s + '\"'
                end
             };
-            
-            threads << Thread.new{
-               #Multiplex
-               if x.key?('smux') then
-                  if x['smux'].key?('enabled') then
-                     uci_commands << uci_set + 'multiplex=\"' + x['smux']['enabled'].to_s + '\"'
-                  end;
-                  #multiplex_protocol
-                  if x['smux'].key?('protocol') then
-                     uci_commands << uci_set + 'multiplex_protocol=\"' + x['smux']['protocol'].to_s + '\"'
-                  end;
-                  #multiplex_max_connections
-                  if x['smux'].key?('max-connections') then
-                     uci_commands << uci_set + 'multiplex_max_connections=\"' + x['smux']['max-connections'].to_s + '\"'
-                  end;
-                  #multiplex_min_streams
-                  if x['smux'].key?('min-streams') then
-                     uci_commands << uci_set + 'multiplex_min_streams=\"' + x['smux']['min-streams'].to_s + '\"'
-                  end;
-                  #multiplex_max_streams
-                  if x['smux'].key?('max-streams') then
-                     uci_commands << uci_set + 'multiplex_max_streams=\"' + x['smux']['max-streams'].to_s + '\"'
-                  end;
-                  #multiplex_padding
-                  if x['smux'].key?('padding') then
-                     uci_commands << uci_set + 'multiplex_padding=\"' + x['smux']['padding'].to_s + '\"'
-                  end;
-                  #multiplex_statistic
-                  if x['smux'].key?('statistic') then
-                     uci_commands << uci_set + 'multiplex_statistic=\"' + x['smux']['statistic'].to_s + '\"'
-                  end;
-                  #multiplex_only_tcp
-                  if x['smux'].key?('only-tcp') then
-                     uci_commands << uci_set + 'multiplex_only_tcp=\"' + x['smux']['only-tcp'].to_s + '\"'
-                  end;
-               end;
-            };
 
             if x['type'] == 'ss' then
                threads << Thread.new{
@@ -443,6 +406,43 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                   if x.key?('udp-over-tcp') then
                      uci_commands << uci_set + 'udp_over_tcp=\"' + x['udp-over-tcp'].to_s + '\"'
                   end
+               };
+
+               threads << Thread.new{
+                  #Multiplex
+                  if x.key?('smux') then
+                     if x['smux'].key?('enabled') then
+                        uci_commands << uci_set + 'multiplex=\"' + x['smux']['enabled'].to_s + '\"'
+                     end;
+                     #multiplex_protocol
+                     if x['smux'].key?('protocol') then
+                        uci_commands << uci_set + 'multiplex_protocol=\"' + x['smux']['protocol'].to_s + '\"'
+                     end;
+                     #multiplex_max_connections
+                     if x['smux'].key?('max-connections') then
+                        uci_commands << uci_set + 'multiplex_max_connections=\"' + x['smux']['max-connections'].to_s + '\"'
+                     end;
+                     #multiplex_min_streams
+                     if x['smux'].key?('min-streams') then
+                        uci_commands << uci_set + 'multiplex_min_streams=\"' + x['smux']['min-streams'].to_s + '\"'
+                     end;
+                     #multiplex_max_streams
+                     if x['smux'].key?('max-streams') then
+                        uci_commands << uci_set + 'multiplex_max_streams=\"' + x['smux']['max-streams'].to_s + '\"'
+                     end;
+                     #multiplex_padding
+                     if x['smux'].key?('padding') then
+                        uci_commands << uci_set + 'multiplex_padding=\"' + x['smux']['padding'].to_s + '\"'
+                     end;
+                     #multiplex_statistic
+                     if x['smux'].key?('statistic') then
+                        uci_commands << uci_set + 'multiplex_statistic=\"' + x['smux']['statistic'].to_s + '\"'
+                     end;
+                     #multiplex_only_tcp
+                     if x['smux'].key?('only-tcp') then
+                        uci_commands << uci_set + 'multiplex_only_tcp=\"' + x['smux']['only-tcp'].to_s + '\"'
+                     end;
+                  end;
                };
 
                threads << Thread.new{
@@ -516,11 +516,7 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                threads << Thread.new{
                #cipher
                if x.key?('cipher') then
-                  if x['cipher'].to_s == 'none' then
-                     uci_commands << uci_set + 'cipher_ssr=dummy'
-                  else
-                     uci_commands << uci_set + 'cipher_ssr=\"' + x['cipher'].to_s + '\"'
-                  end
+                  uci_commands << uci_set + 'cipher_ssr=\"' + x['cipher'].to_s + '\"'
                end
                };
                
@@ -552,6 +548,7 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                end
                };
             end;
+
             if x['type'] == 'vmess' then
                threads << Thread.new{
                #uuid
@@ -725,6 +722,100 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                   else
                      uci_commands << uci_set + 'obfs_vmess=none'
                   end
+               end
+               };
+            end;
+
+             #Mieru
+            if x['type'] == 'mieru' then
+               threads << Thread.new{
+               #port-range
+               if x.key?('port-range') then
+                  uci_commands << uci_set + 'port_range=\"' + x['port-range'].to_s + '\"'
+               end
+               };
+
+               threads << Thread.new{
+               #username
+               if x.key?('username') then
+                  uci_commands << uci_set + 'username=\"' + x['username'].to_s + '\"'
+               end
+               };
+
+               threads << Thread.new{
+               #transport
+               if x.key?('transport') then
+                  uci_commands << uci_set + 'transport=\"' + x['transport'].to_s + '\"'
+               end
+               };
+
+               threads << Thread.new{
+               #multiplexing
+               if x.key?('multiplexing') then
+                  uci_commands << uci_set + 'multiplexing=\"' + x['multiplexing'].to_s + '\"'
+               end
+               };
+            end;
+
+            #AnyTLS
+            if x['type'] == 'anytls' then
+               threads << Thread.new{
+               if x.key?('password') then
+                  uci_commands << uci_set + 'password=\"' + x['password'].to_s + '\"'
+               end
+               };
+               
+               #idle-session-check-interval
+               threads << Thread.new{
+               if x.key?('idle-session-check-interval') then
+                  uci_commands << uci_set + 'idle_session_check_interval=\"' + x['idle-session-check-interval'].to_s + '\"'
+               end
+               };
+
+               #idle-session-timeout
+               threads << Thread.new{
+               if x.key?('idle-session-timeout') then
+                  uci_commands << uci_set + 'idle_session_timeout=\"' + x['idle-session-timeout'].to_s + '\"'
+               end
+               };
+
+               #min-idle-session
+               threads << Thread.new{
+               if x.key?('min-idle-session') then
+                  uci_commands << uci_set + 'min_idle_session=\"' + x['min-idle-session'].to_s + '\"'
+               end
+               };
+
+               #alpn
+               threads << Thread.new{
+               if x.key?('alpn') then
+                  alpn = uci_del + 'alpn >/dev/null 2>&1'
+                  system(alpn)
+                  x['alpn'].each{
+                  |x|
+                     uci_commands << uci_add + 'alpn=\"' + x.to_s + '\"'
+                  }
+                  end
+               };
+
+               #sni
+               threads << Thread.new{
+               if x.key?('sni') then
+                  uci_commands << uci_set + 'sni=\"' + x['sni'].to_s + '\"'
+               end
+               };
+
+               #skip-cert-verify
+               threads << Thread.new{
+               if x.key?('skip-cert-verify') then
+                  uci_commands << uci_set + 'skip_cert_verify=\"' + x['skip-cert-verify'].to_s + '\"'
+               end
+               };
+
+               #client_fingerprint
+               threads << Thread.new{
+               if x.key?('client-fingerprint') then
+                  uci_commands << uci_set + 'client_fingerprint=\"' + x['client-fingerprint'].to_s + '\"'
                end
                };
             end;
@@ -961,6 +1052,38 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                #recv_window
                if x.key?('recv-window') then
                   uci_commands << uci_set + 'recv_window=\"' + x['recv-window'].to_s + '\"'
+               end
+               };
+
+               #hysteria2
+               threads << Thread.new{
+               #initial_stream_receive_window
+               if x.key?('initial-stream-receive-window') then
+                  uci_commands << uci_set + 'initial_stream_receive_window=\"' + x['initial-stream-receive-window'].to_s + '\"'
+               end
+               };
+
+               #hysteria2
+               threads << Thread.new{
+               #max_stream_receive_window
+               if x.key?('max-stream-receive-window') then
+                  uci_commands << uci_set + 'max_stream_receive_window=\"' + x['max-stream-receive-window'].to_s + '\"'
+               end
+               };
+
+               #hysteria2
+               threads << Thread.new{
+               #initial_connection_receive_window
+               if x.key?('initial-connection-receive-window') then
+                  uci_commands << uci_set + 'initial_connection_receive_window=\"' + x['initial-connection-receive-window'].to_s + '\"'
+               end
+               };
+
+               #hysteria2
+               threads << Thread.new{
+               #max_connection_receive_window
+               if x.key?('max-connection-receive-window') then
+                  uci_commands << uci_set + 'max_connection_receive_window=\"' + x['max-connection-receive-window'].to_s + '\"'
                end
                };
 
@@ -1202,6 +1325,56 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                };
             end;
 
+            if x['type'] == 'ssh' then
+               threads << Thread.new{
+               if x.key?('username') then
+                  uci_commands << uci_set + 'auth_name=\"' + x['username'].to_s + '\"'
+               end
+               };
+               
+               threads << Thread.new{
+               if x.key?('password') then
+                  uci_commands << uci_set + 'auth_pass=\"' + x['password'].to_s + '\"'
+               end
+               };
+
+               threads << Thread.new{
+               if x.key?('private-key') then
+                  uci_commands << uci_set + 'private_key=\"' + x['private-key'].to_s + '\"'
+               end
+               };
+
+               threads << Thread.new{
+               if x.key?('private-key-passphrase') then
+                  uci_commands << uci_set + 'private_key_passphrase=\"' + x['private-key-passphrase'].to_s + '\"'
+               end
+               };
+
+               threads << Thread.new{
+               #host-key-algorithms
+               if x.key?('host-key-algorithms') then
+                  host_key_algorithms = uci_del + 'host_key_algorithms >/dev/null 2>&1'
+                  system(host_key_algorithms)
+                  x['host-key-algorithms'].each{
+                  |x|
+                     uci_commands << uci_add + 'host_key_algorithms=\"' + x.to_s + '\"'
+                  }
+                  end
+               };
+
+               threads << Thread.new{
+               #host-key
+               if x.key?('host-key') then
+                  host_key = uci_del + 'host_key >/dev/null 2>&1'
+                  system(host_key)
+                  x['host-key'].each{
+                  |x|
+                     uci_commands << uci_add + 'host_key=\"' + x.to_s + '\"'
+                  }
+                  end
+               };
+            end;
+
             if x['type'] == 'socks5' or x['type'] == 'http' then
                threads << Thread.new{
                if x.key?('username') then
@@ -1254,6 +1427,7 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                end
                };
             end;
+
             if x['type'] == 'http' or x['type'] == 'trojan' then
                threads << Thread.new{
                if x.key?('sni') then
@@ -1261,6 +1435,7 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
                end
                };
             end;
+
             if x['type'] == 'trojan' then
                threads << Thread.new{
                #alpn
@@ -1328,10 +1503,10 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
             #加入策略组
             threads << Thread.new{
                #加入策略组
-               if '$servers_if_update' == '1' and '$config_group_exist' == '1' and '$servers_update' == '1' and server_num.empty? then
+               if '$servers_if_update' == '1' and ! '$new_server_add_group'.to_s.strip.empty? and '$servers_update' == '1' and server_num.empty? then
                   #新代理且设置默认策略组时加入指定策略组
-                  new_provider_groups = %x{uci get openclash.config.new_servers_group}.chomp.split(\"'\").map { |x| x.strip }.reject { |x| x.empty? };
-                  new_provider_groups.each do |x|
+                  new_server_groups = '$new_server_add_group'.to_s.split('|||').map(&:strip).reject(&:empty?);
+                  new_server_groups.each do |x|
                      uci_commands << uci_add + 'groups=\"^' + x + '$\"'
                   end
                elsif '$servers_if_update' != '1' then
@@ -1386,6 +1561,16 @@ ruby -ryaml -rYAML -I "/usr/share/openclash" -E UTF-8 -e "
       };
    end;
    threads_uci.each(&:join);
+   uci_name_tmp.each do |x|
+      if x =~ /uci -q delete/ then
+         system(x);
+      end;
+   end;
+   uci_name_tmp_prv.each do |x|
+      if x =~ /uci -q delete/ then
+         system(x);
+      end;
+   end;
    system('uci -q commit openclash');
 " 2>/dev/null >> $LOG_FILE
 
